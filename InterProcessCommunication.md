@@ -95,4 +95,5 @@ bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
 2. 使用`adb shell dumpsys activity services`可以查看当前启动的 Service 和连接，经实验可知：
   - 如果 Service 以 startService 方法启动过任何一次，则只有在没有任何客户端与此 Service 绑定、且调用了 stopService 方法的情况下，Service 才会停止，两个条件缺一不可。
   - 如果 Service 仅仅以 bindService 方式启动，在所有客户端都解除绑定后，Service 自动 onDestroy。
+
 这与各方面期望相同。以 startService 启动的一方，肯定不希望 Service 莫名其妙 onDestroy。仅以 bindService 方式开启的 Service，在解除所有连接后，自然希望 Service 自动销毁。
