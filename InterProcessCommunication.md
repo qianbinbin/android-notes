@@ -65,9 +65,9 @@ parcelable 是一种类型，注意与 Parcelable 接口区分。
 5. SDK 工具会在`app/build/generated/source/aidl/debug`下自动生成对应的 Java 接口文件`IBookManager.java`，调整视图为 Project 可以看到。其结构分析如下：
   - IBookManager 接口继承了 IInterface 接口，定义 Binder 接口时都必须继承 IInterface 接口。接口中声明了刚才在 AIDL 接口中声明的方法。它还有一个继承了 Binder 类的内部类 Stub，Stub 内部有一个代理类 Proxy。
     - DESCRIPTOR：Binder 的唯一标识，一般就是当前 Binder 的类名。
-    - asInterface：将服务端的 Binder 对象转换为客户端所需的 AIDL 接口类型的对象。如果客户端和服务端在同一进程中，返回的就是服务端 Stub 对象本身，否则返回的是系统封装后的 Stub.Proxy 对象。
+    - asInterface：将服务端的 Binder 对象转换为客户端所需的 AIDL 接口类型的对象。如果客户端和服务端在同一进程中，返回的就是服务端 Stub 对象本身，否则返回的是系统封装后的 Stub.Proxy 对象，查阅 Binder 源码可知，就是通过 DESCRIPTOR 来判断的。
     - asBinder：返回当前 Binder 对象。
-    - onTransact：参数为 code、data、reply、flags，服务端通过 code 可以确定客户端请求的目标方法是什么，接着从 data 中取出目标方法所需参数（如果目标方法有参数的话），然后执行目标方法。目标方法执行完毕后，向 reply 中写入返回值（如果目标方法有返回值的话）。需要注意的是，如果 onTransact 方法返回 false，那么客户端请求会失败，我们可以利用这个特性做权限验证。可以看到，code 实际上对应的是目标方法的标识，且逐项增加。在服务端，考虑到兼容性问题，对 AIDL 接口中方法的修改就必须：
+    - onTransact：参数为 code、data、reply、flags。code 即为 transaction code，服务端以此可以确定客户端请求的目标方法是什么，接着从 data 中取出目标方法所需参数（如果目标方法有参数的话），然后执行目标方法。目标方法执行完毕后，向 reply 中写入返回值（如果目标方法有返回值的话）。需要注意的是，如果 onTransact 方法返回 false，那么客户端请求会失败，我们可以利用这个特性做权限验证。可以看到，code 实际上对应的是目标方法的标识，且随着方法声明的顺序逐项增加。考虑到兼容性问题，服务端对 AIDL 接口中方法的修改就必须：
       1. 新增方法时只能在最后添加，不能在中间添加
       2. 不能删除方法
       3. 不能改变方法声明顺序
@@ -76,13 +76,9 @@ parcelable 是一种类型，注意与 Parcelable 接口区分。
       1. 创建该方法所需输入型 Parcel 对象 _data、输出型 Parcel 对象 _reply、返回值对象（如果有的话），并把参数写入 _data（如果有参数的话）
       2. 调用 transact 方法来发起 RPC（Remote Procedure Call），当前线程挂起
       3. 服务端 onTransact 调用，RPC 过程返回后，客户端线程继续执行，并从 _reply 中取出 RPC 过程的返回结果，最后返回 _reply 中的数据
-6. 服务端实现 IBookManager 接口，例如在自定义 Service 中实例化一个 IBookManager.Stub 对象并实现声明的方法。
+6. 服务端实现 IBookManager 接口，例如在自定义 Service 中实例化一个 IBookManager.Stub 对象 mBinder，并实现声明的方法，并在 onBind 方法中返回。
 7. 把服务端的 AIDL 文件（`IBookManager.aidl`、`Book.aidl`），以及所需的实现 Parcelable 接口的自定义类（`Book.java`）都拷贝到客户端，以便调用。
 8. 客户端实现 ServiceConnection 接口并产生一个实例，如 mConnection，调用 bindService 连接此服务，客户端的 onServiceConnected 方法就会接收到服务端的 onBind 方法返回的 mBinder 实例。
-
-显然，供客户端调用的 Proxy 中方法的过程是：先将参数序列化，然后发起 RPC，最后反序列化得到返回值；服务端 onTransact 中的过程与之相反：先将客户端传来的参数反序列化，然后执行目标方法，最后将客户端所需结果序列化。
-需要注意的是，客户端发起请求后，当前线程会被挂起直至服务端返回数据，如果一个远程方法比较耗时，则客户端请求应在后台线程发起；而服务端 Binder 方法运行在 Binder 线程池中，考虑到线程安全，不管其是否耗时，都应采用同步的方式去实现。
-事实上，我们完全可以不使用 AIDL 文件而直接实现 Binder，AIDL 文件的作用只是让系统生成代码。
 
 值得注意的是，
 1. 隐式调用 Service 时，需要同时设置 Service 所属包名，例如：
@@ -96,4 +92,18 @@ bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
   - 如果 Service 以 startService 方法启动过任何一次，则只有在没有任何客户端与此 Service 绑定、且调用了 stopService 方法的情况下，Service 才会停止，两个条件缺一不可。
   - 如果 Service 仅仅以 bindService 方式启动，在所有客户端都解除绑定后，Service 自动 onDestroy。
 
-这与各方面期望相同。以 startService 启动的一方，肯定不希望 Service 莫名其妙 onDestroy。仅以 bindService 方式开启的 Service，在解除所有连接后，自然希望 Service 自动销毁。
+这与各方面预期相同。以 startService 启动的一方，肯定不希望 Service 莫名其妙 onDestroy。仅以 bindService 方式开启的 Service，在解除所有连接后，自然希望 Service 自动销毁。
+
+显然，供客户端调用的 Proxy 中方法的过程是：先将参数序列化，然后发起 RPC，最后反序列化得到返回值；服务端 onTransact 中的过程与之相反：先将客户端传来的参数反序列化，然后执行目标方法，最后将客户端所需结果序列化。
+需要注意的是，客户端发起请求后，当前线程会被挂起直至服务端返回数据，如果一个远程方法比较耗时，则客户端请求应在后台线程发起；而服务端 Binder 方法运行在 Binder 线程池中，考虑到线程安全，不管其是否耗时，都应采用同步的方式去实现。
+
+事实上，我们完全可以不使用 AIDL 文件而直接实现 Binder，AIDL 文件的作用只是让系统生成代码，主要要修改的有：
+1. 在 Java 代码中声明 IBookManager 接口并继承 IInterface 接口，仿照 AIDL 生成的代码，声明所需方法，建议同时声明对应的 transaction code 以及 DESCRIPTOR 标识，而不是像自动生成的代码那样，把 transaction code 和 DESCRIPTOR 声明在 Stub 类中。这样便于维护，因为 transaction code 必须与方法相关。
+2. 仿照原先的 Stub 类，继承 Binder 并实现 IBookManager 接口，作为服务端类，例如：
+```
+public class BookManagerImpl extends Binder implements IBookManager {}
+```
+其内容与原先的 Stub 类相同。
+其中的 Proxy 类也可以单独拿出来，使得代码结构更加清晰，其内容与原先相同。
+如果想把一些方法放到其它地方实现，就像原先在自定义 Service 中的 mBinder 对象那样，可以将 BookManagerImpl 声明为 abstract 类，然后在需要实现的地方继承它。
+当然这些都还要复制到客户端，其它地方稍作改动即可。由此看来，完全可以不使用 AIDL 文件。
