@@ -98,12 +98,18 @@ bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
 需要注意的是，客户端发起请求后，当前线程会被挂起直至服务端返回数据，如果一个远程方法比较耗时，则客户端请求应在后台线程发起；而服务端 Binder 方法运行在 Binder 线程池中，考虑到线程安全，不管其是否耗时，都应采用同步的方式去实现。
 
 事实上，我们完全可以不使用 AIDL 文件而直接实现 Binder，AIDL 文件的作用只是让系统生成代码，主要要修改的有：
-1. 在 Java 代码中声明 IBookManager 接口并继承 IInterface 接口，仿照 AIDL 生成的代码，声明所需方法，建议同时声明对应的 transaction code 以及 DESCRIPTOR 标识，而不是像自动生成的代码那样，把 transaction code 和 DESCRIPTOR 声明在 Stub 类中。这样便于维护，因为 transaction code 必须与方法相关。
-2. 仿照原先的 Stub 类，继承 Binder 并实现 IBookManager 接口，作为服务端类，例如：
+- 服务端在 Java 代码中声明 IBookManager 接口并继承 IInterface 接口，仿照 AIDL 生成的代码，声明所需方法，建议同时声明对应的 transaction code 以及 DESCRIPTOR 标识，而不是像自动生成的代码那样，把 transaction code 和 DESCRIPTOR 声明在 Stub 类中，这样便于维护。
+- 仿照原先的 Stub 类，继承 Binder 并实现 IBookManager 接口，作为服务端类，例如：
 ```
 public class BookManagerImpl extends Binder implements IBookManager {}
 ```
 其内容与原先的 Stub 类相同。
 其中的 Proxy 类也可以单独拿出来，使得代码结构更加清晰，其内容与原先相同。
 如果想把一些方法放到其它地方实现，就像原先在自定义 Service 中的 mBinder 对象那样，可以将 BookManagerImpl 声明为 abstract 类，然后在需要实现的地方继承它。
-当然这些都还要复制到客户端，其它地方稍作改动即可。由此看来，完全可以不使用 AIDL 文件。
+当然这些文件都要复制到客户端以供调用。其它步骤基本相同。由此看来，AIDL 文件只是提供了一种快速实现 Binder 的工具，完全可以不借助它来实现。
+系统源码参考：`IActivityManager.java`、`ActivityManagerNative.java`、`ActivityManagerService.java`
+
+#### DeathRecipient
+如果 Binder 链接断裂，例如，一个已经与服务端连接的客户端异常终止，但服务端为其分配的资源还没有回收，那么服务端就需要监听 Binder 是否已经死亡，然后完成回收。
+我们可以在每次链接时，实例化一个 IBinder.DeathRecipient 对象，并将对应的 Binder 与此关联。一旦回调 binderDied 方法，说明链接断裂，应释放对应的客户端资源。服务端要处理多个客户端并发访问，因此可以把 DeathRecipient 对象保存到一个 ArrayMap 中（一个适用于小数量级类似 HashMap 的数据结构），参考 `LoadedApk.java`等系统源码。
+客户端也可以使用此方法监听 Binder 是否断裂，我个人测试在回调 binderDied 后均会回调 onServiceDisconnected，不清楚两者应该使用哪一个（还是都要监听）。
