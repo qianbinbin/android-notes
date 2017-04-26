@@ -84,7 +84,7 @@ AIDL（Android 接口定义语言）支持的数据类型：
 
 而如果参数是对象，传递的实际上是对象的引用，方法对参数作出的改变就是对此对象作出的改变。
 
-此处 in、out、inout 的实际含义就是：
+类似地，此处 in、out、inout 的实际含义就是：
 - 原语默认为 in，不能是其他方向，这与 Java 语言中的情况相同
 - 非原语参数：
   1. 如果指定为 in，则服务端能接收到客户端参数，但服务端对参数作出的改变无法反映到客户端
@@ -119,18 +119,18 @@ parcelable 是一种类型，注意与 Parcelable 接口区分。
       在客户端，若请求的方法不存在，并不会发生异常。如果该方法有返回类值，则返回它的默认值。
     - Proxy：此类的对象中的方法允许客户端调用，其内部实现为：
       1. 创建该方法所需输入型 Parcel 对象 _data、输出型 Parcel 对象 _reply、返回值对象（如果有的话），并把参数写入 _data（如果有参数的话）
-      2. 调用 transact 方法来发起 RPC（Remote Procedure Call），当前线程挂起
-      3. 服务端 onTransact 调用，RPC 过程返回后，客户端线程继续执行，并从 _reply 中取出 RPC 过程的返回结果，最后返回 _reply 中的数据
+      2. 调用 transact 方法来发起 RPC（Remote Procedure Call），当前线程挂起（如果在主线程进行比较耗时的 RPC 调用，则可能引发 ANR）
+      3. 服务端 onTransact 调用，RPC 发生在 Binder 线程池中，因此不需要创建新线程。RPC 过程返回后，客户端线程继续执行，并从 _reply 中取出 RPC 过程的返回结果，最后返回 _reply 中的数据
 6. 服务端实现 IBookManager 接口，例如在自定义 Service 中实例化一个 IBookManager.Stub 对象 mBinder，并实现声明的方法，并在 onBind 方法中返回。
 7. 把服务端的 AIDL 文件（`IBookManager.aidl`、`Book.aidl`），以及所需的实现 Parcelable 接口的自定义类（`Book.java`）都拷贝到客户端，以便调用。
-8. 客户端实现 ServiceConnection 接口并产生一个实例，如 mConnection，调用 bindService 连接此服务，客户端的 onServiceConnected 方法就会接收到服务端的 onBind 方法返回的 mBinder 实例。
+8. 客户端实现 ServiceConnection 接口并产生一个实例，如 mConnection，调用 bindService 连接此服务，客户端的 onServiceConnected 方法就会接收到服务端的 onBind 方法返回的 mBinder 实例。mConnection 中的方法回调均发生在主线程中，因此也不适用于耗时操作。
 
 值得注意的是：
 1. 隐式调用 Service 时，需要同时设置 Service 所属包名，例如：
 ```
 Intent intent = new Intent();
 intent.setAction("com.example.YOUR_ACTION");
-intent.setPackageName("com.example.packageName");
+intent.setPackageName("com.example.packagename");
 bindService(intent, mConnection, Context.BIND_AUTO_CREATE);
 ```
 2. 使用命令
@@ -168,4 +168,94 @@ public class BookManagerImpl extends Binder implements IBookManager {}
 
 我们可以在每次链接时，实例化一个 IBinder.DeathRecipient 对象，并将对应的 Binder 与此关联。一旦回调 binderDied 方法，说明链接断裂，应释放对应的客户端资源。服务端往往要处理多个客户端并发访问，因此可以把 DeathRecipient 对象保存到一个 ArrayMap 中（一个适用于小数量级类似 HashMap 的数据结构），参考 `LoadedApk.java`等系统源码。
 
-客户端也可以使用此方法监听 Binder 是否断裂，但我个人测试在回调 binderDied 后均会回调 onServiceDisconnected，不清楚两者应该使用哪一个（还是都要监听）。
+客户端也可以使用此方法监听 Binder 是否断裂，断裂后 binderDied 和 onServiceDisconnected 均会被回调，区别在于 binderDied 在 Binder 线程池中回调，onServiceDisconnected 在主线程中回调。
+#### RemoteCallbackList
+在 AIDL 中使用观察者模式，客户端要监听服务端的数据，一般想到的做法是声明一个 AIDL 接口，然后客户端实现这个接口，并在服务端注册，服务端维护一个接口对象的列表。但这样只能注册而不能解除注册，因为对象无法跨进程直接传输，而要经过序列化和反序列化过程，因此在注册和解除注册时，虽然客户端传递的是同一个对象，但服务端反序列化后已经不是同一个对象了。
+
+这时，我们可以使用 RemoteCallbackList，它支持任意 AIDL 接口（即继承了 IInterface 接口），其内部维护了一个 ArrayMap，key 是 IBinder 类型，value 是 Callback 类型。
+
+服务端和同一客户端所有远程对象的底层 Binder 对象是同一个，而不同客户端对应的 Binder 不同（可参考 asInterface 和 asBinder 方法源码），因此可以作为 key。
+
+Callback 类实现了 DeathRecipient 接口，封装了真正的远程 listener。
+
+此外，RemoteCallbackList 内部实现了线程同步，无需额外做线程同步工作。
+
+观察者模式使用步骤：
+
+1. 声明 listener 接口，如`IOnNewBookArrivedListener.aidl`
+
+2. 在服务端维护一个 listener 列表：
+```
+private final RemoteCallbackList<IOnNewBookArrivedListener> mListenerList = new RemoteCallbackList<>();
+```
+
+3. 服务端 IBinder 对象实现 register 和 unregister 方法
+
+4. 服务端在必要处通知所有的 listener，这需要遍历 mListenerList，但 RemoteCallbackList<E extends IInterface> 并不是一个 List，注意其遍历方式：
+```
+final int N = mListenerList.beginBroadcast();
+for (int i = 0; i < N; i++) {
+    IOnNewBookArrivedListener l = mListenerList.getBroadcastItem(i);
+    if (l != null) {
+        try {
+            l.onNewBookArrived(newBook);
+        } catch (RemoteException e) {
+            // RemoteCallbackList will automatically remove dead object
+            Log.d(TAG, "onNewBookArrived error: " + e.getMessage());
+        }
+    }
+}
+mListenerList.finishBroadcast();
+```
+beginBroadcast 和 finishBroadcast 必须配对使用。
+
+5. 客户端实例化一个 listener 对象并在必要处进行注册及解除注册。
+
+#### 权限验证
+介绍两种方法：
+1. 在 onBind 方法中验证，如果验证不通过则返回 null，绑定失败
+  1. 在服务端`AndroidManifest.xml`的`manifest`节点下声明权限：
+  ```
+  <permission
+      android:name="com.example.permission.ACCESS_BOOK_SERVICE"
+      android:protectionLevel="normal" />
+  <uses-permission android:name="com.example.permission.ACCESS_BOOK_SERVICE" />
+  ```
+  2. 在客户端`AndroidManifest.xml`的`manifest`节点下申请权限：
+  ```
+  <uses-permission android:name="com.example.permission.ACCESS_BOOK_SERVICE" />
+  ```
+  3. 服务端的 onBind 方法中进行验证，如果验证不通过则返回 null，这时 Service 仍然能启动，只是绑定不成功：
+  ```
+  int result = checkCallingOrSelfPermission(PERMISSION);
+  if (result == PackageManager.PERMISSION_DENIED) {
+      return null;
+  }
+  ```
+2. 在 onTransact 方法中验证，如果验证不通过则返回 false，客户端调用服务端方法失败
+  - 可以仿照上面用 checkCallingOrSelfPermission 方法验证
+  - 可以使用 UID 验证，例如重写 onTransact 方法并验证包名：
+  ```
+  public boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
+      String[] pkgs = getPackageManager().getPackagesForUid(getCallingUid());
+      String pkg = null;
+      if (pkgs != null && pkgs.length > 0) {
+          pkg = pkgs[0];
+      }
+      if (pkg == null || !pkg.startsWith("com.example.packagename")) {
+          return false;
+      }
+      return super.onTransact(code, data, reply, flags);
+  }
+  ```
+  两种方式可以结合使用。
+
+## Android 中的 IPC 方式
+### Intent 和 Bundle
+Android 四大组件中的三个（Activity、Service、Receiver）都支持在 Intent 中传递数据，但 Intent 支持的类型有限。而 Bundle 实现了 Parcelable 接口，只要在 Bundle 中附加可以序列化的数据，例如基本类型、Parcelable 对象、Serializable 对象等，就可以通过 Intent 进行传输。
+### 文件共享
+使用文件来交换数据，我们可以交换一些文本信息，序列化和反序列化对象等，双方只要约定数据格式即可。
+Linux 上并发读写文件没有限制，所以要考虑线程安全问题。
+SharedPreference 是 Android 中提供的轻量级存储方案，通过键值对的方式来存储数据，在底层实现上使用 XML 文件来存储，通常保存在`/data/data/com.example.packagename/shared_prefs`下。但 Android 系统对其有缓存策略，因此在多进程模式下，系统对它的读写就变得不可靠，不建议在 IPC 中使用。
+### Messenger
+Messenger 可以在进程间传递 Message 对象，它是一种轻量级的 IPC 方案，底层实现是 AIDL，由于它一次处理一个请求，因此在服务端不存在并发执行的情形，不用考虑线程同步问题。
