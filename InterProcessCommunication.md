@@ -1,4 +1,4 @@
-﻿# IPC 机制
+# IPC 机制
 ## Android 中的多进程
 ### 开启多进程
 Android 中开启多进程，常规方法只有一种，即为四大组件（Activity、Service、Receiver、ContentProvider）在 AndroidManifest.xml 文件中指定`android:process`属性，无法为一个线程或实体类指定其运行时所在的进程。还有一种非常规方法，通过 JNI 在 native 层 fork 一个新的进程。

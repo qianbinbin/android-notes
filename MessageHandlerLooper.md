@@ -1,5 +1,7 @@
-﻿# Android 的消息机制
+# Android 的消息机制
+
 ## 概述
+
 Android 的 UI 控件不是线程安全的，因此规定访问 UI 必须在主线程（即 UI 线程）中进行。ViewRootImpl 的 checkThread 方法对 UI 操作进行验证，如果在后台线程中访问 UI，程序就会抛出异常。
 
 但主线程中不适合进行耗时操作，因为这样会导致 ANR，所以耗时操作应在后台线程中进行。执行完成后，再使用 Handler 切换到主线程进行 UI 操作。
@@ -9,9 +11,11 @@ Android 的 UI 控件不是线程安全的，因此规定访问 UI 必须在主�
 Handler 是 Android 消息机制的上层接口，通过它可以将一个任务切换到 Handler 所在的线程中执行。Handler 的运行需要底层的 MessageQueue 和 Looper 支撑。MessageQueue 维护了一个 Message 链表，以队列的逻辑结构向 Handler 和 Looper 提供接口，Looper 中维护了一个 MessageQueue 类型的消息队列，Handler 将 Message 加入队列，Looper 从队列中取出 Message，Looper 以无限循环的方式查找是否有新 Message。Looper 类中 ThreadLocal<Looper> 类型的静态变量`sThreadLocal`，用于为当前线程保存和获取 Looper（ThreadLocal 用于为当前线程保存变量，此变量只能被当前线程访问，其它线程无法访问）。
 
 Handler 创建时，如果不指定 Looper，默认会采用当前线程的 Looper 来构造消息循环系统：
+
 ```
 mLooper = Looper.myLooper();
 ```
+
 线程默认是没有 Looper 的，如果不为线程创建 Looper，使用 Handler 时就会抛出异常。
 
 主线程，即 ActivityThread，其创建时就会初始化 Looper，因此主线程中默认可以使用 Handler。
@@ -19,12 +23,15 @@ mLooper = Looper.myLooper();
 Handler 创建完毕后，可使用 post 方法将一个 Runnable，也可使用 send 方法发送一个 Message，本质都是将一个 Message 加入 Handler 所在线程对应的 Looper 中的消息队列。Looper 发现有新 Message，就会调用 dispatchMessage 来处理。因此 Handler 中的业务逻辑就在创建 Handler 所在的线程中执行。这也是后台线程能通过主线程中的 Handler 来更新 UI 的原因。
 
 ## Android 消息机制分析
+
 ### ThreadLocal 工作原理
+
 ThreadLocal 是一个线程内部的数据存储类，只有在指定线程中可以获取到存储的数据，其它线程无法获取。
 
 不同线程访问同一个 ThreadLocal 对象，它们对 ThreadLocal 的读写仅限于各自线程的内部，因此不同线程中维护一套数据副本且彼此互不干扰。Looper、ActivityThread、ActivityManagerService 中都用到了 ThreadLocal。
 
 在开始采用 OpenJDK 的 Android 7.0 中，ThreadLocal 的原理是使用了一个内部类 ThreadLocalMap（一个定制化的哈希表）。ThreadLocalMap 以 ThreadLocal 对象为 key，以需要保存的对象为 value，提供存取键值对的接口。实际上 ThreadLocalMap 维护了一个 Entry 类型的数组`table`，这些键值对就保存在 Entry 对象中：
+
 ```
 public class ThreadLocal<T> {
     // ...
@@ -75,14 +82,15 @@ public class ThreadLocal<T> {
 
         private Entry[] table;
 
-        private Entry getEntry(ThreadLocal key) { /** ... */ }
+        private Entry getEntry(ThreadLocal key) { /* ... */ }
 
-        private void set(ThreadLocal key, Object value) { /** ... */ }
+        private void set(ThreadLocal key, Object value) { /* ... */ }
 
-        private void remove(ThreadLocal key) { /** ... */ }
+        private void remove(ThreadLocal key) { /* ... */ }
 
         // ...
    }
+}
 ```
 
 可见 key 的实质是 ThreadLocal 的弱引用，value 的实质就是 Entry 实例中保存的对象。
@@ -92,11 +100,12 @@ public class ThreadLocal<T> {
 总之，ThreadLocal 最终的操作对象，就是当前线程的 threadLocals 对象中的 Entry 数组`table`，因此在不同线程中访问同一个 ThreadLocal 对象，它们的读写操作仅限于各线程内部。
 
 ### MessageQueue 消息队列的工作原理
+
 Message 中含有一个 Message 类型的变量 next，因此 Message 本身可看作链表结点，MessageQueue 正是以 Message 链表为存储结构，将其封装为队列的逻辑结构。
 
 MessageQueue 中有一个 Message 类型变量`mMessages`，就是链表的头结点。在 mMessages 链表中，元素的 when 属性越小，越排在链表前面。
 
-要理解 MessageQueue，要先了解同步/异步 Message 和 Barrier 的概念。
+要理解 MessageQueue，要先了解两种特殊的 Message：异步（asynchronous）Message 和 Barrier。
 
 #### 同步和异步 Message/Handler
 
@@ -107,6 +116,7 @@ Message 默认是同步（synchronous）的，要修改 Message 同步或异步�
 默认情况下，Handler 也都是同步的，除非使用 Handler 类带有 boolean 类型`async`形参的构造方法来构造实例，将自己的`mAsynchronous`属性置为 true，而目前（Android N）这些方法都用`@hide`修饰，对第三方 APP 隐藏了接口。
 
 当一个 Handler 对象发送消息时，不管是 postXXX 方法还是 sendXXX 方法，最终都是调用如下方法将 Message 加入队列：
+
 ```
 private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMillis) {
     msg.target = this;
@@ -116,6 +126,7 @@ private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMilli
     return queue.enqueueMessage(msg, uptimeMillis);
 }
 ```
+
 可见只要 Handler 本身是异步的，其 Message 加入队列时，都会先将 Message 也置为异步。
 
 #### Sync Barrier 同步障碍
@@ -159,6 +170,7 @@ private int postSyncBarrier(long when) {
     }
 }
 ```
+
 发送一个 Barrier 的过程，就是获取一个 Message 新实例，然后将其插入到 MessageQueue 中，入队位置依然是根据元素 when 的值。由于没有设置 Barrier 的`target`属性，故`target`属性为`null`。可以认为，`target`为`null`的 Message 就是 Barrier。
 
 发送 Barrier 得到的返回值是一个 token，依据此 token，可以使用 removeSyncBarrier 方法从队列中移除对应的 Barrier。
@@ -170,6 +182,7 @@ Barrier 可用于立即推迟接下来的同步消息，直到此 Barrier 被移
 enqueueMessage 方法是 MessageQueue 的入队接口，next 方法是出队接口。next 方法会遍历 Message 链表，并取出到时的 Message，方法中包含一个无限循环，不断轮询链表中的 Message，如果没有到时的 Message，则 next 方法会阻塞，`mBlocked`就用来指示 next 方法是否已阻塞。
 
 enqueueMessage 方法入队逻辑的主要代码如下，其中`msg`和`when`是传入的参数，分别为 Message 对象和延时：
+
 ```
 msg.markInUse();
 msg.when = when;
@@ -200,7 +213,9 @@ if (p == null || when == 0 || when < p.when) {
     prev.next = msg;
 }
 ```
+
 入队逻辑很清晰：
+
 - 如果入队 Message 是队列中最早（when 属性最小）的，直接用头插法插入链表即可，此时需要立即处理入队 Message，显然需要唤醒 next 方法
 - 否则需要将入队 Message 插入队列中合适的位置，使队列按照元素的 when 属性升序排列。此时遍历链表，找到第一个 when 大于当前入队消息的结点，并插入到此结点之前
   - 如果原头结点是 Barrier，说明 next 方法已被阻塞或即将阻塞
@@ -208,6 +223,7 @@ if (p == null || when == 0 || when < p.when) {
     - 否则不需要唤醒
 
 主要出队逻辑如下：
+
 ```
 // Try to retrieve the next message.  Return if found.
 final long now = SystemClock.uptimeMillis();

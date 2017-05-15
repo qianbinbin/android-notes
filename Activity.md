@@ -1,4 +1,4 @@
-﻿# Activity
+# Activity
 ## Activity 生命周期
 Android 中最常见的 Activity 回调方法有：onCreate、onStart、onResume、onPause、onStop、onDestroy 等。
 从 Activity1 导航至 Activity2，先后调用：
