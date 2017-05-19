@@ -8,29 +8,23 @@ Android 的 UI 控件不是线程安全的，因此规定访问 UI 必须在主�
 
 为什么 UI 控件不设计成线程安全的呢？一是避免访问逻辑变复杂，二是避免效率低下。
 
-Handler 是 Android 消息机制的上层接口，通过它可以将一个任务切换到 Handler 所在的线程中执行。Handler 的运行需要 MessageQueue 和 Looper 支撑。MessageQueue 维护了一个 Message 链表，以队列的逻辑结构向 Handler 和 Looper 提供接口，Looper 中维护了一个 MessageQueue 类型的消息队列。Handler 将 Message 加入队列，Looper 从队列中取出 Message，Looper 以无限循环的方式查找是否有需要处理的 Message。Looper 类中 ThreadLocal<Looper> 类型的静态变量`sThreadLocal`，用于为当前线程保存和获取 Looper（ThreadLocal 用于为当前线程保存变量，此变量只能被当前线程访问，其它线程无法访问）。
+Handler 是 Android 消息机制的上层接口，通过它可以将一个任务切换到 Handler 所在的线程中执行。Handler 的运行需要 MessageQueue 和 Looper 支撑。MessageQueue 维护了一个 Message 链表，以队列的逻辑结构向 Handler 和 Looper 提供接口，Looper 中维护了一个 MessageQueue 类型的消息队列。Handler 将 Message 加入队列，Looper 以无限循环的方式查找队列中是否有需要处理的 Message。
 
-Handler 创建时，如果不指定 Looper，默认会采用当前线程的 Looper 来构造消息循环系统：
+Looper 类中 ThreadLocal<Looper> 类型的静态变量`sThreadLocal`，用于为当前线程保存和获取 Looper（ThreadLocal 用于为当前线程保存变量，此变量只能被当前线程访问，其它线程无法访问）。
 
-```
-mLooper = Looper.myLooper();
-```
-
-线程默认是没有 Looper 的，如果不为线程创建 Looper，使用 Handler 时就会抛出异常，所以后台线程中一般要先调用`Looper.prepare()`为当前线程创建一个 Looper。
+后台线程默认是没有初始化 Looper 的。创建 Handler 实例时，如果没有事先为当前线程创建 Looper，或没有使用特定的构造方法指定 Looper 对象，就会抛出异常。后台线程中一般使用`Looper.prepare()`方法为当前线程创建一个 Looper。
 
 主线程，即 ActivityThread，其创建时就会初始化 Looper，因此主线程中默认可以使用 Handler。
 
-Handler 创建完毕后，可使用 post 开头的方法（以下简称 post 方法）将一个 Runnable，也可使用 send 开头的方法（以下简称 send 方法）发送一个 Message，本质都是将一个 Message 加入 Handler 所在线程对应的 Looper 中的消息队列。Looper 发现有需要处理的 Message，就会调用对应 Handler 的`dispatchMessage()`方法来处理。因此 Handler 中的业务逻辑就在创建 Handler 所在的线程中执行。这也是后台线程能通过主线程中的 Handler 来更新 UI 的原因。
+Handler 创建完毕后，可使用 post 开头的方法（以下简称 post 方法）发送一个 Runnable，也可使用 send 开头的方法（以下简称 send 方法）发送一个 Message，本质都是将一个 Message 加入 Handler 对应的 Looper 中的消息队列。post 方法本质上是将发送的 Runnable 指定为新建 Message 实例的`callback`属性，然后再将此 Message 加入队列。Looper 发现有需要处理的 Message，就会调用对应 Handler 的`dispatchMessage()`方法来处理。因此 Handler 中的业务逻辑就在 Handler 对应的 Looper 所在线程中执行。这也是后台线程能通过主线程中的 Handler 来更新 UI 的原因。
 
 ## Android 消息机制分析
 
 ### ThreadLocal 工作原理
 
-ThreadLocal 是一个线程内部的数据存储类，只有在指定线程中可以获取到存储的数据，其它线程无法获取。
+ThreadLocal 类用于维护线程作用域的变量，不同线程访问同一个 ThreadLocal 对象时，它们对 ThreadLocal 的读写仅限于各自线程的内部，即不同线程中维护一套数据副本，彼此互不干扰。Looper、ActivityThread、ActivityManagerService 中都用到了 ThreadLocal。
 
-不同线程访问同一个 ThreadLocal 对象，它们对 ThreadLocal 的读写仅限于各自线程的内部，即不同线程中维护一套数据副本，彼此互不干扰。Looper、ActivityThread、ActivityManagerService 中都用到了 ThreadLocal。
-
-在开始采用 OpenJDK 的 Android 7.0 中，ThreadLocal 的原理是使用了一个静态嵌套类 ThreadLocalMap（一个定制化的哈希表）。ThreadLocalMap 以 ThreadLocal 对象为 key，以需要保存的对象为 value，提供存取键值对的接口。实际上 ThreadLocalMap 维护了一个 Entry 类型的数组`table`，这些键值对就保存在 Entry 数组中。ThreadLocal 类结构如下：
+在开始采用 OpenJDK 的 Android 7.0 中，ThreadLocal 的原理是使用了一个静态嵌套类 ThreadLocalMap（一个定制化的哈希表）。ThreadLocalMap 以 ThreadLocal 对象为 key，以需要保存的对象为 value，提供存取键值对的接口。实际上 ThreadLocalMap 维护了一个 ThreadLocal.ThreadLocalMap.Entry 类型的数组`table`，这些键值对就保存在 Entry 数组中。ThreadLocal 类结构如下：
 
 ```
 public class ThreadLocal<T> {
@@ -113,11 +107,13 @@ MessageQueue 中有一个 Message 类型变量`mMessages`，就是链表的头�
 
 Message 默认是同步（synchronous）的，要修改 Message 同步或异步（asynchronous）标识，可调用 Message 的`setAsynchronous()`方法（此接口在 API 22 中开放）。
 
-默认情况下，Handler 也都是同步的，除非使用 Handler 类带有 boolean 类型`async`形参的构造方法来构造实例，将自己的`mAsynchronous`属性置为`true`，而目前（Android N）这些构造方法都用`@hide`修饰，对第三方 APP 隐藏了接口。
+默认情况下，Handler 也都是同步的，除非使用 Handler 类带有 boolean 类型形参`async`的构造方法来构造实例，将自己的`mAsynchronous`属性置为`true`，而目前（Android N）这些构造方法都用`@hide`修饰，对第三方 APP 隐藏了接口。
 
 当一个 Handler 对象发送消息时，不管是 post 方法还是 send 方法，最终都是调用`enqueueMessage`方法将 Message 加入队列：
 
 ```
+// frameworks/base/core/java/android/os/MessageQueue.java
+
 private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMillis) {
     msg.target = this;
     if (mAsynchronous) {
@@ -134,6 +130,8 @@ private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMilli
 Barrier，即 Sync Barrier，字面意义为障碍或同步障碍，本质上是一种特殊的 Message。MessageQueue 提供了加入 Barrier 的隐藏方法：
 
 ```
+// frameworks/base/core/java/android/os/MessageQueue.java
+
 /**
  * @hide
  */
@@ -184,37 +182,64 @@ Barrier 可用于立即推迟接下来的同步消息的处理，直到此 Barri
 `enqueueMessage()`方法入队逻辑的主要代码如下，其中`msg`和`when`是传入的参数，分别为 Message 对象和其处理时间：
 
 ```
-msg.markInUse();
-msg.when = when;
-Message p = mMessages;
-boolean needWake;
-if (p == null || when == 0 || when < p.when) {
-    // New head, wake up the event queue if blocked.
-    msg.next = p;
-    mMessages = msg;
-    needWake = mBlocked;
-} else {
-    // Inserted within the middle of the queue.  Usually we don't have to wake
-    // up the event queue unless there is a barrier at the head of the queue
-    // and the message is the earliest asynchronous message in the queue.
-    needWake = mBlocked && p.target == null && msg.isAsynchronous();
-    Message prev;
-    for (;;) {
-        prev = p;
-        p = p.next;
-        if (p == null || when < p.when) {
-            break;
+// frameworks/base/core/java/android/os/MessageQueue.java
+
+boolean enqueueMessage(Message msg, long when) {
+    if (msg.target == null) {
+        throw new IllegalArgumentException("Message must have a target.");
+    }
+    if (msg.isInUse()) {
+        throw new IllegalStateException(msg + " This message is already in use.");
+    }
+
+    synchronized (this) {
+        if (mQuitting) {
+            IllegalStateException e = new IllegalStateException(
+                    msg.target + " sending message to a Handler on a dead thread");
+            Log.w(TAG, e.getMessage(), e);
+            msg.recycle();
+            return false;
         }
-        if (needWake && p.isAsynchronous()) {
-            needWake = false;
+
+        msg.markInUse();
+        msg.when = when;
+        Message p = mMessages;
+        boolean needWake;
+        if (p == null || when == 0 || when < p.when) {
+            // New head, wake up the event queue if blocked.
+            msg.next = p;
+            mMessages = msg;
+            needWake = mBlocked;
+        } else {
+            // Inserted within the middle of the queue.  Usually we don't have to wake
+            // up the event queue unless there is a barrier at the head of the queue
+            // and the message is the earliest asynchronous message in the queue.
+            needWake = mBlocked && p.target == null && msg.isAsynchronous();
+            Message prev;
+            for (;;) {
+                prev = p;
+                p = p.next;
+                if (p == null || when < p.when) {
+                    break;
+                }
+                if (needWake && p.isAsynchronous()) {
+                    needWake = false;
+                }
+            }
+            msg.next = p; // invariant: p == prev.next
+            prev.next = msg;
+        }
+
+        // We can assume mPtr != 0 because mQuitting is false.
+        if (needWake) {
+            nativeWake(mPtr);
         }
     }
-    msg.next = p; // invariant: p == prev.next
-    prev.next = msg;
+    return true;
 }
 ```
 
-入队逻辑很清晰：
+入队逻辑很清晰，直接看中间的`if else`块：
 
 - 如果入队 Message 是队列中最早（`when`属性最小）的，直接用头插法插入链表即可
     - 若`next()`方法被阻塞，需要立即处理入队 Message，显然需要唤醒`next()`方法
@@ -226,68 +251,131 @@ if (p == null || when == 0 || when < p.when) {
 `next()`方法主要出队逻辑如下：
 
 ```
-// Try to retrieve the next message.  Return if found.
-final long now = SystemClock.uptimeMillis();
-Message prevMsg = null;
-Message msg = mMessages;
-if (msg != null && msg.target == null) {
-    // Stalled by a barrier.  Find the next asynchronous message in the queue.
-    do {
-        prevMsg = msg;
-        msg = msg.next;
-    } while (msg != null && !msg.isAsynchronous());
-}
-if (msg != null) {
-    if (now < msg.when) {
-        // Next message is not ready.  Set a timeout to wake up when it is ready.
-        nextPollTimeoutMillis = (int) Math.min(msg.when - now, Integer.MAX_VALUE);
-    } else {
-        // Got a message.
-        mBlocked = false;
-        if (prevMsg != null) {
-            prevMsg.next = msg.next;
-        } else {
-            mMessages = msg.next;
-        }
-        msg.next = null;
-        if (DEBUG) Log.v(TAG, "Returning message: " + msg);
-        msg.markInUse();
-        return msg;
+// frameworks/base/core/java/android/os/MessageQueue.java
+
+Message next() {
+    // Return here if the message loop has already quit and been disposed.
+    // This can happen if the application tries to restart a looper after quit
+    // which is not supported.
+    final long ptr = mPtr;
+    if (ptr == 0) {
+        return null;
     }
-} else {
-    // No more messages.
-    nextPollTimeoutMillis = -1;
+
+    // ...
+
+    int nextPollTimeoutMillis = 0;
+    for (;;) {
+
+        // ...
+
+        nativePollOnce(ptr, nextPollTimeoutMillis);
+
+        synchronized (this) {
+            // Try to retrieve the next message.  Return if found.
+            final long now = SystemClock.uptimeMillis();
+            Message prevMsg = null;
+            Message msg = mMessages;
+            if (msg != null && msg.target == null) {
+                // Stalled by a barrier.  Find the next asynchronous message in the queue.
+                do {
+                    prevMsg = msg;
+                    msg = msg.next;
+                } while (msg != null && !msg.isAsynchronous());
+            }
+            if (msg != null) {
+                if (now < msg.when) {
+                    // Next message is not ready.  Set a timeout to wake up when it is ready.
+                    nextPollTimeoutMillis = (int) Math.min(msg.when - now, Integer.MAX_VALUE);
+                } else {
+                    // Got a message.
+                    mBlocked = false;
+                    if (prevMsg != null) {
+                        prevMsg.next = msg.next;
+                    } else {
+                        mMessages = msg.next;
+                    }
+                    msg.next = null;
+                    if (DEBUG) Log.v(TAG, "Returning message: " + msg);
+                    msg.markInUse();
+                    return msg;
+                }
+            } else {
+                // No more messages.
+                nextPollTimeoutMillis = -1;
+            }
+
+            // Process the quit message now that all pending messages have been handled.
+            if (mQuitting) {
+                dispose();
+                return null;
+            }
+
+            // ...
+
+        }
+
+        // ...
+
+        // While calling an idle handler, a new message could have been delivered
+        // so go back and look again for a pending message without waiting.
+        nextPollTimeoutMillis = 0;
+    }
 }
 ```
+
+`nextPollTimeoutMillis`指示下次轮询的时间，使用本地方法`nativePollOnce(long ptr, int timeoutMillis)`来阻塞相应的时间。如果`nextPollTimeoutMillis`为 -1，说明没有需要处理的消息，进入无限阻塞，直到有新的消息为止。
 
 第一个 if 语句判断头结点是否是一个 Barrier，如果是，说明队列中同步消息的处理被推迟，则需要找到第一个异步消息。
 
 此时，`msg`或者指向队列中下一个需要处理的消息（可能是同步的，也可能是异步的），或者为`null`。
 
-`nextPollTimeoutMillis`表示下次轮询的时间。
-
 第二个 if 语句中，
 
-- 如果`msg != null`判定为真，表示有消息待处理
-    - 若消息的`when`还没到，则计算还需要等待的时间，下次循环时，先调用 native 方法`nativePollOnce()`阻塞相应的时间
+- 如果`msg != null`，表示有消息待处理
+    - 若消息的`when`还没到，则计算还需要等待的时间，下次轮询时，先调用 native 方法`nativePollOnce()`阻塞相应的时间
     - 否则说明消息需要立即处理，消息出队
-- 否则表示队列中没有需要处理的消息
+- 否则表示队列中没有需要处理的消息，将 nextPollTimeoutMillis 设置为 -1，进入无限阻塞，直到有新的消息为止
+
+上面的`next()`源码省略了一些 MessageQueue.IdleHandler 相关的代码，此接口用于在线程没有当前需要处理的 Message、即将阻塞时，处理一些事情，在此不赘述。如果没有需要处理的 IdleHandler，则会使用`continue;`语句进行下个轮询，进入阻塞；反之则进行回调，for 循环的最后，nextPollTimeoutMillis 被重新设为 0，这是因为在回调过程中，可能有新的 Message 入队。
+
+总得来看，如果已经退出消息循环，则`next()`方法返回`null`，否则返回下个需处理的 Message 对象。
 
 #### MessageQueue 的退出
 
 消息队列使用`quit(boolean safe)`方法退出，`safe`参数用于指示是否安全退出：
 
 ```
-if (safe) {
-    removeAllFutureMessagesLocked();
-} else {
-    removeAllMessagesLocked();
+// frameworks/base/core/java/android/os/MessageQueue.java
+
+void quit(boolean safe) {
+    if (!mQuitAllowed) {
+        throw new IllegalStateException("Main thread not allowed to quit.");
+    }
+
+    synchronized (this) {
+        if (mQuitting) {
+            return;
+        }
+        mQuitting = true;
+
+        if (safe) {
+            removeAllFutureMessagesLocked();
+        } else {
+            removeAllMessagesLocked();
+        }
+
+        // We can assume mPtr != 0 because mQuitting was previously false.
+        nativeWake(mPtr);
+    }
 }
 ```
 
 `removeAllMessagesLocked()`方法会直接移除回收队列中所有的 Message：
 
 ```
+// frameworks/base/core/java/android/os/MessageQueue.java
+
 private void removeAllMessagesLocked() {
     Message p = mMessages;
     while (p != null) {
@@ -302,6 +390,8 @@ private void removeAllMessagesLocked() {
 `removeAllFutureMessagesLocked()`方法会移除未到时的 Message，已经到时的 Message 依然会处理：
 
 ```
+// frameworks/base/core/java/android/os/MessageQueue.java
+
 private void removeAllFutureMessagesLocked() {
     final long now = SystemClock.uptimeMillis();
     Message p = mMessages;
@@ -333,17 +423,154 @@ private void removeAllFutureMessagesLocked() {
 
 ### Looper 的工作原理
 
-Looper 在一个线程中的调用过程很简单，先使用`Looper.prepare()`为当前线程创建一个 Looper，然后通过`Looper.loop()`来开启消息循环。例如：
+在后台线程中，Looper 和 Handler 的调用过程很简单，常用的方法是先使用`Looper.prepare()`为当前线程创建一个 Looper，并实例化一个 Handler，然后通过`Looper.loop()`来开启消息循环。例如：
 
 ```
 new Thread() {
     @Override
     public void run() {
         Looper.prepare();
-        Handler handler = new Handler();
+        Handler handler = new Handler() { /* ... */ };
         Looper.loop();
     };
 }.start();
 ```
 
-如果没有创建 Looper，则创建 Handler 时会抛出异常。
+如果当前线程没有创建 Looper，则（不指定 Looper 时）创建 Handler 时会抛出异常，Handler 构造方法中会做如下判断：
+
+```
+// frameworks/base/core/java/android/os/Handler.java
+
+public Handler(Callback callback, boolean async) {
+    // ...
+
+    mLooper = Looper.myLooper();
+    if (mLooper == null) {
+        throw new RuntimeException(
+            "Can't create handler inside thread that has not called Looper.prepare()");
+    }
+
+    // ...
+
+}
+```
+
+另一种方法是在构造 Handler 实例时指定 Looper，即在构造方法中传入一个 Looper 对象，Handler 实例作用于 Looper 对象对应的线程。如果 Looper 为空，同样会抛出异常。
+
+#### Looper 的创建
+
+在后台线程中，使用
+
+```
+Looper.prepare();
+```
+
+为当前线程创建 Looper。`prepare()`方法实现如下：
+
+```
+// frameworks/base/core/java/android/os/Looper.java
+
+// sThreadLocal.get() will return null unless you've called prepare().
+static final ThreadLocal<Looper> sThreadLocal = new ThreadLocal<Looper>();
+
+// ...
+
+public static void prepare() {
+    prepare(true);
+}
+
+private static void prepare(boolean quitAllowed) {
+    if (sThreadLocal.get() != null) {
+        throw new RuntimeException("Only one Looper may be created per thread");
+    }
+    sThreadLocal.set(new Looper(quitAllowed));
+}
+```
+
+根据上面 ThreadLocal 原理的分析，`sThreadLocal`会为当前线程生成一个副本，线程在调用`Looper.prepare()`时，构造的 Looper 实例的作用域为当前线程，保存于`sThreadLocal`中。`quitAllowed`参数指示消息队列是否允许手动退出（参考上面“MessageQueue 的退出”），可见后台线程是允许退出消息队列的。
+
+而主线程使用：
+
+```
+// frameworks/base/core/java/android/os/Looper.java
+
+private static Looper sMainLooper;  // guarded by Looper.class
+
+// ...
+
+public static void prepareMainLooper() {
+    prepare(false);
+    synchronized (Looper.class) {
+        if (sMainLooper != null) {
+            throw new IllegalStateException("The main Looper has already been prepared.");
+        }
+        sMainLooper = myLooper();
+    }
+}
+
+public static Looper getMainLooper() {
+    synchronized (Looper.class) {
+        return sMainLooper;
+    }
+}
+
+// ...
+
+public static @Nullable Looper myLooper() {
+    return sThreadLocal.get();
+}
+```
+
+来初始化 Looper（不应手动调用），`prepare(quitAllowed)`方法参数为`false`，因此主线程不允许手动退出消息队列。
+
+注意到主线程的 Looper 保存在一个静态的`sMainLooper`对象中，而没有使用 ThreadLocal，这是因为一个进程对应一个 Dalvik/ART 虚拟机，一个进程也只包含一个主线程，故同一进程中获取到的是同一个`sMainLooper`对象，不存在多线程产生对象副本的问题。
+
+#### Looper.loop() 开启消息循环
+
+```
+// frameworks/base/core/java/android/os/Looper.java
+
+public static void loop() {
+    final Looper me = myLooper();
+    if (me == null) {
+        throw new RuntimeException("No Looper; Looper.prepare() wasn't called on this thread.");
+    }
+    final MessageQueue queue = me.mQueue;
+
+    // ...
+
+    for (;;) {
+        Message msg = queue.next(); // might block
+        if (msg == null) {
+            // No message indicates that the message queue is quitting.
+            return;
+        }
+
+        // ...
+
+        try {
+            msg.target.dispatchMessage(msg);
+        } finally {
+
+            // ...
+
+        }
+
+        // ...
+
+        msg.recycleUnchecked();
+    }
+}
+```
+
+`loop()`方法主要的工作就是不断循环地取出下一个需处理的 Message 并进行处理。其大致流程：
+
+1. 调用 MessageQueue 的`next()`方法，从消息队列中获取下一个需要处理的 Message，此过程可能会阻塞
+
+    - 如果获取到的 Message 为`null`，从上面 MessageQueue 的`next()`方法可知，消息队列已经退出，故直接返回
+
+2. 获取到 Message 后，回调其对应的 Handler（即 Message 的`target`属性）的`dispatchMessage()`方法，因此 Handler 中的业务逻辑是在其 Looper 对象中执行的，这就实现了线程切换
+
+#### 退出消息循环
+
+Looper 提供了`quit()`方法和`quitSafely()`方法来退出，调用的分别是 MessageQueue 的`quit(false)`方法和`quit(true)`方法。
