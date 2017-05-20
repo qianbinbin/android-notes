@@ -24,7 +24,17 @@ Handler 创建完毕后，可使用 post 开头的方法（以下简称 post 方
 
 ThreadLocal 类用于维护线程作用域的变量，不同线程访问同一个 ThreadLocal 对象时，它们对 ThreadLocal 的读写仅限于各自线程的内部，即不同线程中维护一套数据副本，彼此互不干扰。Looper、ActivityThread、ActivityManagerService 中都用到了 ThreadLocal。
 
-在开始采用 OpenJDK 的 Android 7.0 中，ThreadLocal 的原理是使用了一个静态嵌套类 ThreadLocalMap（一个定制化的哈希表）。ThreadLocalMap 以 ThreadLocal 对象为 key，以需要保存的对象为 value，提供存取键值对的接口。实际上 ThreadLocalMap 维护了一个 ThreadLocal.ThreadLocalMap.Entry 类型的数组`table`，这些键值对就保存在 Entry 数组中。ThreadLocal 类结构如下：
+在开始采用 OpenJDK 的 Android 7.0 中，ThreadLocal 的原理是使用了一个静态嵌套类 ThreadLocalMap（一个定制化的哈希表）。
+
+每个 Thread 实例中都包含一个 ThreadLocalMap 对象`threadLocals`：
+
+```
+/* ThreadLocal values pertaining to this thread. This map is maintained
+ * by the ThreadLocal class. */
+ThreadLocal.ThreadLocalMap threadLocals = null;
+```
+
+ThreadLocalMap 以 ThreadLocal 对象为 key，以需要保存的对象为 value，提供存取键值对的接口。实际上 ThreadLocalMap 维护了一个 ThreadLocal.ThreadLocalMap.Entry 类型的数组`table`，这些键值对就保存在 Entry 数组中。ThreadLocal 类结构如下：
 
 ```
 public class ThreadLocal<T> {
@@ -89,9 +99,7 @@ public class ThreadLocal<T> {
 
 可见 key 的实质是 ThreadLocal 的弱引用，value 的实质就是 Entry 实例中保存的对象。
 
-每个 Thread 实例中包含一个 ThreadLocalMap 对象`threadLocals`。在不同线程访问同一个 ThreadLocal 对象时，其`set()`方法会以此对象为 key，以实际保存的值为 value，保存到各自线程的`threadLocals`对象中。
-
-总之，ThreadLocal 最终的操作对象，就是当前线程的`threadLocals`对象中的 Entry 数组`table`，因此在不同线程中访问同一个 ThreadLocal 对象，它们的读写操作仅限于各线程内部。
+在不同线程访问同一个 ThreadLocal 对象时，其`set()`方法会以此对象为 key，以实际保存的值为 value，保存到各自线程的`threadLocals`对象中。因此在不同线程中访问同一个 ThreadLocal 对象，它们的读写操作仅限于各线程内部。
 
 ### MessageQueue 消息队列的工作原理
 
@@ -426,14 +434,21 @@ private void removeAllFutureMessagesLocked() {
 在后台线程中，Looper 和 Handler 的调用过程很简单，常用的方法是先使用`Looper.prepare()`为当前线程创建一个 Looper，并实例化一个 Handler，然后通过`Looper.loop()`来开启消息循环。例如：
 
 ```
-new Thread() {
-    @Override
+class LooperThread extends Thread {
+    public Handler mHandler;
+
     public void run() {
         Looper.prepare();
-        Handler handler = new Handler() { /* ... */ };
+
+        mHandler = new Handler() {
+            public void handleMessage(Message msg) {
+                // process incoming messages here
+            }
+        };
+
         Looper.loop();
-    };
-}.start();
+    }
+}
 ```
 
 如果当前线程没有创建 Looper，则（不指定 Looper 时）创建 Handler 时会抛出异常，Handler 构造方法中会做如下判断：
@@ -574,3 +589,34 @@ public static void loop() {
 #### 退出消息循环
 
 Looper 提供了`quit()`方法和`quitSafely()`方法来退出，调用的分别是 MessageQueue 的`quit(false)`方法和`quit(true)`方法。
+
+### Handler 的工作原理
+
+#### 消息发送
+
+Handler 通过 post 方法和 send 方法来发送消息，post 方法最终也是通过 send 方法来实现的。发送的消息会被插入 Handler 所关联的 Looper 对象中的消息队列，例如：
+
+```
+// frameworks/base/core/java/android/os/Handler.java
+
+public boolean sendMessageAtTime(Message msg, long uptimeMillis) {
+    MessageQueue queue = mQueue;
+    if (queue == null) {
+        RuntimeException e = new RuntimeException(
+                this + " sendMessageAtTime() called with no mQueue");
+        Log.w("Looper", e.getMessage(), e);
+        return false;
+    }
+    return enqueueMessage(queue, msg, uptimeMillis);
+}
+
+private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMillis) {
+    msg.target = this;
+    if (mAsynchronous) {
+        msg.setAsynchronous(true);
+    }
+    return queue.enqueueMessage(msg, uptimeMillis);
+}
+```
+
+可见最终调用的是 MessageQueue 的`enqueueMessage()`方法。
