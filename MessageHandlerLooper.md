@@ -805,10 +805,3 @@ private class H extends Handler {
 ```
 
 H 中定义了一组消息类型，包含四大组件的启动、停止等过程。
-
-<!---
-
-![](https://pic3.zhimg.com/7fb8728164975ac86a2b0b886de2b872_r.jpg)
-
-（图片来自：https://www.zhihu.com/question/34652589/answer/90344494）
--->
