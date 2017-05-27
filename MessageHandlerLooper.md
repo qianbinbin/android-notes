@@ -351,7 +351,16 @@ Message next() {
 
 #### MessageQueue 的退出
 
-消息队列使用`quit(boolean safe)`方法退出，`safe`参数用于指示是否安全退出：
+构造 MessageQueue 时，`mQuitAllowed`属性标识消息队列是否允许退出：
+
+```
+MessageQueue(boolean quitAllowed) {
+    mQuitAllowed = quitAllowed;
+    mPtr = nativeInit();
+}
+```
+
+后台线程允许退出，而主线程是不允许的，否则会抛出异常。消息队列的退出使用`quit(boolean safe)`方法，`safe`参数用于指示是否安全退出：
 
 ```
 // frameworks/base/core/java/android/os/MessageQueue.java
@@ -431,7 +440,7 @@ private void removeAllFutureMessagesLocked() {
 
 ### Looper 的工作原理
 
-在后台线程中，Looper 和 Handler 的调用过程很简单，常用的方法是先使用`Looper.prepare()`为当前线程创建一个 Looper，并实例化一个 Handler，然后通过`Looper.loop()`来开启消息循环。例如：
+在后台线程中，Looper 和 Handler 的调用过程很简单。一种常用的方法是先使用`Looper.prepare()`为当前线程创建一个 Looper，并实例化一个 Handler，然后通过`Looper.loop()`来开启消息循环。例如：
 
 ```
 class LooperThread extends Thread {
@@ -451,26 +460,9 @@ class LooperThread extends Thread {
 }
 ```
 
-如果当前线程没有创建 Looper，则（不指定 Looper 时）创建 Handler 时会抛出异常，Handler 构造方法中会做如下判断：
+另一种方法是在构造 Handler 实例时指定 Looper，即在构造方法中传入一个 Looper 对象。
 
-```
-// frameworks/base/core/java/android/os/Handler.java
-
-public Handler(Callback callback, boolean async) {
-    // ...
-
-    mLooper = Looper.myLooper();
-    if (mLooper == null) {
-        throw new RuntimeException(
-            "Can't create handler inside thread that has not called Looper.prepare()");
-    }
-
-    // ...
-
-}
-```
-
-另一种方法是在构造 Handler 实例时指定 Looper，即在构造方法中传入一个 Looper 对象，Handler 实例作用于 Looper 对象对应的线程。如果 Looper 为空，同样会抛出异常。
+总之，创建 Handler 时，必须有一个 Looper 对象与其对应，否则会抛出异常，详见下面 Handler 部分。
 
 #### Looper 的创建
 
@@ -500,9 +492,16 @@ private static void prepare(boolean quitAllowed) {
     }
     sThreadLocal.set(new Looper(quitAllowed));
 }
+
+// ...
+
+private Looper(boolean quitAllowed) {
+    mQueue = new MessageQueue(quitAllowed);
+    mThread = Thread.currentThread();
+}
 ```
 
-根据上面 ThreadLocal 原理的分析，`sThreadLocal`会为当前线程生成一个副本，线程在调用`Looper.prepare()`时，构造的 Looper 实例的作用域为当前线程，保存于`sThreadLocal`中。`quitAllowed`参数指示消息队列是否允许手动退出（参考上面“MessageQueue 的退出”），可见后台线程是允许退出消息队列的。
+根据上面 ThreadLocal 原理的分析，`sThreadLocal`会为当前线程生成一个副本。线程在调用`Looper.prepare()`时，构造一个 Looper 实例，并初始化消息队列`mQueue`。此 Looper 保存于`sThreadLocal`中，作用域为当前线程。`quitAllowed`参数指示消息队列是否允许手动退出（参考上面“MessageQueue 的退出”），可见后台线程是允许退出消息队列的。
 
 而主线程使用：
 
@@ -584,7 +583,7 @@ public static void loop() {
 
     - 如果获取到的 Message 为`null`，从上面 MessageQueue 的`next()`方法可知，消息队列已经退出，故直接返回
 
-2. 获取到 Message 后，回调其对应的 Handler（即 Message 的`target`属性）的`dispatchMessage()`方法，因此 Handler 中的业务逻辑是在其 Looper 对象中执行的，这就实现了线程切换
+2. 获取到 Message 后，回调其对应的 Handler（即 Message 的`target`属性）的`dispatchMessage()`方法，因此 Handler 中的业务逻辑是在其 Looper 对象所在线程中执行的，这就实现了线程切换
 
 #### 退出消息循环
 
@@ -592,9 +591,52 @@ Looper 提供了`quit()`方法和`quitSafely()`方法来退出，调用的分别
 
 ### Handler 的工作原理
 
+#### Handler 的创建
+
+创建 Handler 时，如果不显式指定 Looper 对象，则最终会调用如下构造方法：
+
+```
+// frameworks/base/core/java/android/os/Handler.java
+
+/**
+ * @hide
+ */
+public Handler(Callback callback, boolean async) {
+
+    // ...
+
+    mLooper = Looper.myLooper();
+    if (mLooper == null) {
+        throw new RuntimeException(
+            "Can't create handler inside thread that has not called Looper.prepare()");
+    }
+
+    // ...
+
+}
+```
+
+Handler 会试图获取当前线程的 Looper 对象，这也表示 Handler 的回调逻辑会在构造它的线程中执行。
+
+如果显式指定 Looper 对象，则最终会调用如下构造方法：
+
+```
+/**
+ * @hide
+ */
+public Handler(Looper looper, Callback callback, boolean async) {
+    mLooper = looper;
+    mQueue = looper.mQueue;
+    mCallback = callback;
+    mAsynchronous = async;
+}
+```
+
+总之，Handler 的回调逻辑最终会在此 Looper 对象所在线程中执行。
+
 #### 消息发送
 
-Handler 通过 post 方法和 send 方法来发送消息，post 方法最终也是通过 send 方法来实现的。发送的消息会被插入 Handler 所关联的 Looper 对象中的消息队列，例如：
+Handler 通过 post 方法和 send 方法来发送消息。post 方法会构造一个 Message 对象，并将发送的 Runnable 封装为此 Message 的`callback`属性，最终也是通过 send 方法来实现消息发送的。发送的消息会被插入 Handler 所关联的 Looper 对象中的消息队列`mQueue`中，如：
 
 ```
 // frameworks/base/core/java/android/os/Handler.java
@@ -620,3 +662,153 @@ private boolean enqueueMessage(MessageQueue queue, Message msg, long uptimeMilli
 ```
 
 可见最终调用的是 MessageQueue 的`enqueueMessage()`方法。
+
+#### 消息处理
+
+在`Looper.loop()`开启消息循环后，每当获取到需要处理的 Message，则调用`msg.target.dispatchMessage(msg)`来执行对应 Handler 中的业务逻辑。`dispatchMessage()`方法处理逻辑如下：
+
+```
+// frameworks/base/core/java/android/os/Handler.java
+
+/**
+ * Callback interface you can use when instantiating a Handler to avoid
+ * having to implement your own subclass of Handler.
+ *
+ * @param msg A {@link android.os.Message Message} object
+ * @return True if no further handling is desired
+ */
+public interface Callback {
+    public boolean handleMessage(Message msg);
+}
+
+/**
+ * Subclasses must implement this to receive messages.
+ */
+public void handleMessage(Message msg) {
+}
+
+/**
+ * Handle system messages here.
+ */
+public void dispatchMessage(Message msg) {
+    if (msg.callback != null) {
+        handleCallback(msg);
+    } else {
+        if (mCallback != null) {
+            if (mCallback.handleMessage(msg)) {
+                return;
+            }
+        }
+        handleMessage(msg);
+    }
+}
+
+// ...
+
+private static void handleCallback(Message message) {
+    message.callback.run();
+}
+```
+
+- 如果`callback`属性不为`null`，则直接执行它
+- 否则
+    - 如果此 Handler 的`mCallback`不为`null`，则回调`mCallback`的`handleMessage()`方法
+    - 否则回调 Handler 的`handleMessage()`方法
+
+Message 的`callback`属性就是使用 post 方法发送的 Runnable 对象。
+
+`mCallback`是 Handler.Callback 接口类型对象。
+
+创建 Handler 最常见的方式是派生一个 Handler 的子类并重写`handleMessage()`方法，如果不想派生子类，就可以通过 Callback 接口来实现。
+
+### 主线程的消息循环
+
+ActivityThread 并没有继承 Thread，严格来说它并不是线程，但它运行在主线程中，其`main()`方法是主线程的入口，因此常把 ActivityThread 称作主线程。
+
+事实上，主线程是在 ActivityManagerService 的 `startProcessLocked()`方法中，调用`Process.start()`方法启动的，它会在当前新建的线程中加载 ActivityThread 类，并调用`ActivityThread.main()`方法作为应用程序的入口点。
+
+`ActivityThread.main()`方法中会调用`Looper.prepareMainLooper()`创建主线程的 Looper，实例化 ActivityThread，并开启消息循环：
+
+```
+// frameworks/base/core/java/android/app/ActivityThread.java
+
+// ...
+
+final Looper mLooper = Looper.myLooper();
+
+// ...
+
+public static void main(String[] args) {
+
+    // ...
+
+    Looper.prepareMainLooper();
+
+    ActivityThread thread = new ActivityThread();
+
+    // ...
+
+    Looper.loop();
+
+    throw new RuntimeException("Main thread loop unexpectedly exited");
+}
+```
+
+处理消息还需要一个 Handler，即内部类 H：
+
+```
+// frameworks/base/core/java/android/app/ActivityThread.java
+
+final H mH = new H();
+
+// ...
+
+private class H extends Handler {
+    public static final int LAUNCH_ACTIVITY         = 100;
+    public static final int PAUSE_ACTIVITY          = 101;
+    public static final int PAUSE_ACTIVITY_FINISHING= 102;
+    public static final int STOP_ACTIVITY_SHOW      = 103;
+    public static final int STOP_ACTIVITY_HIDE      = 104;
+
+    // ...
+
+    public void handleMessage(Message msg) {
+        if (DEBUG_MESSAGES) Slog.v(TAG, ">>> handling: " + codeToString(msg.what));
+        switch (msg.what) {
+            case LAUNCH_ACTIVITY: {
+                Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "activityStart");
+                final ActivityClientRecord r = (ActivityClientRecord) msg.obj;
+
+                r.packageInfo = getPackageInfoNoCheck(
+                        r.activityInfo.applicationInfo, r.compatInfo);
+                handleLaunchActivity(r, null, "LAUNCH_ACTIVITY");
+                Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+            } break;
+            case RELAUNCH_ACTIVITY: {
+                Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "activityRestart");
+                ActivityClientRecord r = (ActivityClientRecord)msg.obj;
+                handleRelaunchActivity(r);
+                Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+            } break;
+
+            // ...
+
+        }
+
+        // ...
+
+    }
+
+    // ...
+
+}
+```
+
+H 中定义了一组消息类型，包含四大组件的启动、停止等过程。
+
+<!---
+
+![](https://pic3.zhimg.com/7fb8728164975ac86a2b0b886de2b872_r.jpg)
+
+（图片来自：https://www.zhihu.com/question/34652589/answer/90344494）
+-->
