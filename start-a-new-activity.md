@@ -21,7 +21,9 @@ startActivity(intent);
 public void startActivityForResult(@RequiresPermission Intent intent, int requestCode,
         @Nullable Bundle options) {
     if (mParent == null) {
-        options = transferSpringboardActivityOptions(options);
+
+        // ...
+
         Instrumentation.ActivityResult ar =
             mInstrumentation.execStartActivity(
                 this, mMainThread.getApplicationThread(), mToken, this,
@@ -37,11 +39,11 @@ public void startActivityForResult(@RequiresPermission Intent intent, int reques
 }
 ```
 
-这里的`mInstrumentation`是 Instrumentation 类型的对象，这个类主要用于监听系统和应用的交互。
+`mParent`也是 Activity 类型，它原先用于在一个界面中嵌入多个 Activity，后来被 Fragment 代替，故这里只关注`mParent == null`这部分逻辑。
 
-`mMainThread`是 ActivityThread 类型对象。ActivityThread 运行在主线程中，其`main()`方法是主线程的入口，因此常把 ActivityThread 称作主线程，`mMainThread`就代表了当前应用的主线程。
+`mInstrumentation`是 Instrumentation 类型的对象，这个类主要用于监听系统和应用的交互。
 
-`mMainThread.getApplicationThread()`获取的是一个 ApplicationThread 类型的对象，ApplicationThread 是 ActivityThread 的一个内部类。而 ApplicationThread 继承了 ApplicationThreadNative，这是一个 Binder。显然，这里获取到的 ApplicationThread 对象是一个运行在主线程中的 Binder 服务，利用它来进行进程间通信。
+`mMainThread`是 ActivityThread 类型对象。ActivityThread 运行在主线程中，其`main()`方法是主线程的入口，因此常把 ActivityThread 称作主线程，`mMainThread`就代表了当前应用的主线程。例如在 Launcher 中点击图标启动一个应用的 Activity，`mMainThread`就是 Launcher 的主线程。`mMainThread.getApplicationThread()`获取的是一个 ApplicationThread 类型的对象，ApplicationThread 是 ActivityThread 的一个内部类。而 ApplicationThread 继承了 ApplicationThreadNative，这是一个 Binder。显然，这里获取到的 ApplicationThread 对象是一个运行在 Launcher 主线程中的 Binder 服务，利用它来进行进程间通信。
 
 `mToken`是一个 Binder 对象的远程接口。
 
@@ -57,8 +59,9 @@ public ActivityResult execStartActivity(
     // ...
 
     try {
-        intent.migrateExtraStreamToClipData();
-        intent.prepareToLeaveProcess(who);
+
+        // ...
+
         int result = ActivityManagerNative.getDefault()
             .startActivity(whoThread, who.getBasePackageName(), intent,
                     intent.resolveTypeIfNeeded(who.getContentResolver()),
@@ -71,6 +74,8 @@ public ActivityResult execStartActivity(
     return null;
 }
 ```
+
+这里`ActivityManagerNative.getDefault()`获取的是一个 IActivityManager 客户端代理，利用它和系统中的 ActivityManagerService 进行通信。
 
 ## ActivityManagerNative.getDefault()
 
