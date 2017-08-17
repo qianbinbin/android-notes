@@ -1,8 +1,10 @@
-# 在 Android Java libcore 核心库打印 Log
+# 在 Android Java 核心库 libcore 中打印 Log
 
 Android Java 核心库中是无法直接使用 android.util.Log 的，添加后编译不通过，因为 framework 中的 Java API 依赖于 Java 核心库。
 
-本文以`libcore/ojluni/src/main/java/java/io/File.java`为例，简单介绍在核心库中打印 Log 的几种方法。
+在 Android 7.0 之前，Java 核心库源码在`libcore/luni/`下，luni 代表 lang、util、net、io，是 Java 中最常见的包；Android 7.0 中，核心库在`libcore/ojluni/`下，oj 代表 OpenJDK。
+
+本文简单介绍在核心库中打印 Log 的几种方法。
 
 ## 使用 System.out 和 System.err
 
@@ -94,20 +96,18 @@ Java 核心库中有 java.util.logging.Logger，在 Android 中它也被重定�
 使用方法很简单，在需要打印 Log 的源码中添加：
 
 ```java
-// libcore/ojluni/src/main/java/java/io/File.java
-
-private static final Logger sLogger = Logger.getLogger("File");
+private static final Logger sLogger = Logger.getLogger("MyTag");
 
 private static void logi(String msg) {
     sLogger.info(msg);
 }
 ```
 
-打印 Log 时只需调用`logi()`方法即可。
+使用时只需调用`logi()`方法即可。
 
 这里使用的是 Level 为 INFO 的 Log。你也可以自定义 Level，核心库 java.util.logging.Logger 与 Android 本地 android.util.Log 的 Level 对应关系，可以参考 java.util.logging.Level 和 com.android.internal.logging.AndroidHandler。
 
-和`System.out`一样，这种方法也是在 SystemServer 进程创建之后、启动之前进行重定向的，在这之前无法打印 Log。
+Logger 的重定向和`System.out`接近，在这之前也无法打印 Log。
 
 事实上，这里 Log 的打印实际上是调用了 Logger 中注册的 Handler，这里的 Handler 是 java.util.logging.Handler，不是 android.os.Handler。
 
@@ -217,8 +217,10 @@ public void publish(Logger source, String tag, Level level, String message) {
 
 可见最终还是调用的 android.util.Log。
 
-如果需要在 SystemServer 之前打印 Log，则此方法无效。
+如果需要在开机流程中较早的位置打印 Log，则此方法同样无效。
 
 ## 移植 android.util.Log
+
+以上方法使用简单，可以满足大部分需要，但都有一些缺陷。其实完全可以把 android.util.Log 核心部分移植过来，只不过有些繁琐，需要以 JNI 方式调用 liblog 中的 Log 函数。
 
 ## 打印栈信息 Stack Trace
