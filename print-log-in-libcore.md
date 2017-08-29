@@ -332,6 +332,6 @@ jint JNI_OnLoad(JavaVM* vm, void*) { JNIEnv* env;
 
 编译生成 libopenjdk.so，把它 push 到 /system/lib/ 或 /system/lib64/ 下（取决于手机），然后重启即可打印出我们想要的 Log 了。
 
-但我在`java.io.File#delete()`中使用这个 Log 时，发现了一个奇怪的问题：一些第三方 APP 会报 java.lang.UnsatisfiedLinkError 错误（如 Chrome 等），而 Android 系统本身，以及其它 APP，包括自己写的 demo 都没有问题，我也在网上查到过很多说法，均以失败告终。希望有人能指点迷津……
+但我在`java.io.File#delete()`中使用这个 Log 时，发现了一个奇怪的问题：一些第三方 APP 会报 java.lang.UnsatisfiedLinkError 错误（如 Chrome 等），而 Android 系统本身，以及其它 APP，包括自己写的 demo 都没有问题，我也在网上查到很多说法，均以失败告终。希望有人能指点迷津……
 
 ## 打印栈信息 Stack Trace
