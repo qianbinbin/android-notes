@@ -221,6 +221,117 @@ public void publish(Logger source, String tag, Level level, String message) {
 
 ## 移植 android.util.Log
 
-以上方法使用简单，可以满足大部分需要，但都有一些缺陷。其实完全可以把 android.util.Log 核心部分移植过来，只不过有些繁琐，需要以 JNI 方式调用 liblog 中的 Log 函数。
+以上方法使用简单，可以满足大部分需要，但都有一些缺陷。其实也可以把 android.util.Log 核心部分移植过来，只不过有些繁琐，需要以 JNI 方式调用 liblog 中的 Log 函数。
+
+例如，要使`java.util.logging.Logger`也能像`android.util.Log`那样方便地打印 Log，可以在 Logger 类中添加一个静态方法`d()`，对应`android.util.Log.d()`。
+
+### 在 Java 代码中声明 native 方法
+
+```java
+// libcore/ojluni/src/main/java/java/util/logging/Logger.java
+
+/**
+ * @hide
+ */
+public static int d(String tag, String msg) {
+    return println_native(0, 3, tag, msg);
+}
+
+/**
+ * @hide
+ */
+public static native int println_native(int bufID,
+        int priority, String tag, String msg);
+```
+
+注意要使用`hide`修饰。
+
+然后在需要的地方调用`Logger.d()`方法。
+
+编译生成 core-oj.jar，把它 push 到 /system/framework/ 中。要使此核心库生效，可能需要删除 /system/framework/arm/ 或 /system/framework/arm64/ 下的 boot.art、boot.oat（取决于手机，可都删除，删除后重启会比较慢）。
+
+### 实现 JNI 层
+
+只要移植 android_util_Log.cpp 中的`android_util_Log_println_native()`方法即可，创建文件：
+
+```cpp
+// libcore/ojluni/src/main/native/java_util_logging_Logger.cpp
+
+#include "jni.h"
+#include "JNIHelp.h"
+
+#include <cutils/log.h>
+
+#define NATIVE_METHOD(className, functionName, signature) \
+{ #functionName, signature, (void*)(className ## _ ## functionName) }
+
+/*******************************************************************/
+/*  BEGIN JNI ********* BEGIN JNI *********** BEGIN JNI ************/
+/*******************************************************************/
+
+static jint Logger_println_native(JNIEnv* env, jobject clazz,
+        jint bufID, jint priority, jstring tagObj, jstring msgObj)
+{
+    const char* tag = NULL;
+    const char* msg = NULL;
+
+    if (msgObj == NULL) {
+        jniThrowNullPointerException(env, "println needs a message");
+        return -1;
+    }
+
+    if (bufID < 0 || bufID >= LOG_ID_MAX) {
+        jniThrowNullPointerException(env, "bad bufID");
+        return -1;
+    }
+
+    if (tagObj != NULL)
+        tag = env->GetStringUTFChars(tagObj, NULL);
+    msg = env->GetStringUTFChars(msgObj, NULL);
+
+    int res = __android_log_buf_write(bufID, (android_LogPriority)priority, tag, msg);
+
+    if (tag != NULL)
+        env->ReleaseStringUTFChars(tagObj, tag);
+    env->ReleaseStringUTFChars(msgObj, msg);
+
+    return res;
+}
+
+static JNINativeMethod gMethods[] = {
+    NATIVE_METHOD(Logger, println_native, "(IILjava/lang/String;Ljava/lang/String;)I"),
+};
+
+void register_java_util_logging_Logger(JNIEnv* env) {
+    jniRegisterNativeMethods(env, "java/util/logging/Logger", gMethods, NELEM(gMethods));
+}
+```
+
+在 Regisger.cpp 中注册：
+
+```cpp
+// libcore/ojluni/src/main/native/Register.cpp
+
+// ...
+
+extern void register_java_util_logging_Logger(JNIEnv* env);
+
+// ...
+
+jint JNI_OnLoad(JavaVM* vm, void*) { JNIEnv* env;
+
+    // ...
+
+    register_java_util_logging_Logger(env);
+
+    // ...
+}
+```
+
+接着在 libcore/ojluni/src/main/native/openjdksub.mk 中添加相应的 C++ 文件。
+
+编译生成 libopenjdk.so，把它 push 到 /system/lib/ 或 /system/lib64/ 下（取决于手机），然后重启即可打印出我们想要的 Log 了。
+
+但我在`java.io.File#delete()`中使用这个 Log 时，发现了一个奇怪的问题：一些第三方 APP 会报 java.lang.UnsatisfiedLinkError 错误（如 Chrome 等），而 Android 系统本身，以及其它 APP，包括自己写的 demo 都没有问题，我也在网上查过很多方法，均以失败告终。希望有人能指点迷津……
 
 ## 打印栈信息 Stack Trace
