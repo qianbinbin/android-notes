@@ -53,7 +53,7 @@ public static void redirectLogStreams() {
 }
 ```
 
-在`redirectLogStreams()`方法中，设置输出流为 AndroidPrintStream，当使用`System.out`和`System.err`进行打印时，最终是调用的是 android.util.Log：
+在`RuntimeInit.zygoteInit()`方法中，调用`redirectLogStreams()`方法，设置输出流为 AndroidPrintStream，当使用`System.out`和`System.err`进行打印时，最终是调用的是 android.util.Log：
 
 ```java
 // frameworks/base/core/java/com/android/internal/os/AndroidPrintStream.java
@@ -107,9 +107,9 @@ private static void logi(String msg) {
 
 这里使用的是 Level 为 INFO 的 Log。你也可以自定义 Level，核心库 java.util.logging.Logger 与 Android 本地 android.util.Log 的 Level 对应关系，可以参考 java.util.logging.Level 和 com.android.internal.logging.AndroidHandler。
 
-Logger 的重定向和`System.out`接近，在这之前也无法打印 Log。
+Logger 的重定向位置和`System.out`接近，在这之前也无法打印 Log。
 
-事实上，这里 Log 的打印实际上是调用了 Logger 中注册的 Handler，这里的 Handler 是 java.util.logging.Handler，不是 android.os.Handler。
+事实上，这里 Log 实际上是调用了 Logger 中注册的 Handler（java.util.logging.Handler，不是 android.os.Handler）。
 
 Handler 的注册，紧随`RuntimeInit.zygoteInit()`方法中`redirectLogStreams()`后，调用`commonInit()`方法：
 
@@ -332,6 +332,41 @@ jint JNI_OnLoad(JavaVM* vm, void*) { JNIEnv* env;
 
 编译生成 libopenjdk.so，把它 push 到 /system/lib/ 或 /system/lib64/ 下（取决于手机），然后重启即可打印出我们想要的 Log 了。
 
-但我在`java.io.File#delete()`中使用这个 Log 时，发现了一个奇怪的问题：一些第三方 APP 会报 java.lang.UnsatisfiedLinkError 错误（如 Chrome 等），而 Android 系统本身，以及其它 APP，包括自己写的 demo 都没有问题，我也在网上查到很多说法，均以失败告终。希望有人能指点迷津……
+但我在`java.io.File#delete()`中使用这个 Log 时，发现了一个奇怪的问题：一些第三方 APP 会报 java.lang.UnsatisfiedLinkError 错误（如 Chrome 等），而 Android 系统本身，以及其它 APP，包括自己写的 demo 都没有问题，尝试网上各种方法无果，希望有人能指点迷津……
 
 ## 打印栈信息 Stack Trace
+
+同样我们可以把 android.util.Log 中的`getStackTraceString()`方法移植过来。
+
+需要注意的是，FastPrintWriter 也是 framework 中的，这里要替换为 Java 核心库中的 PrintWriter。
+
+```java
+
+/**
+ * @hide
+ */
+public static String getStackTraceString(Throwable tr) {
+    if (tr == null) {
+        return "";
+    }
+
+    // This is to reduce the amount of log spew that apps do in the non-error
+    // condition of the network being unavailable.
+    Throwable t = tr;
+    while (t != null) {
+        if (t instanceof UnknownHostException) {
+            return "";
+        }
+        t = t.getCause();
+    }
+
+    StringWriter sw = new StringWriter();
+    // PrintWriter pw = new FastPrintWriter(sw, false, 256);
+    PrintWriter pw = new PrintWriter(sw, false);
+    tr.printStackTrace(pw);
+    pw.flush();
+    return sw.toString();
+}
+```
+
+使用`getStackTraceString(new Throwable())`即可得到栈信息了。
