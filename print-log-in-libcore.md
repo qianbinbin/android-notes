@@ -338,10 +338,9 @@ jint JNI_OnLoad(JavaVM* vm, void*) { JNIEnv* env;
 
 同样我们可以把 android.util.Log 中的`getStackTraceString()`方法移植过来。
 
-需要注意的是，FastPrintWriter 也是 framework 中的，这里要替换为 Java 核心库中的 PrintWriter。
+需要注意的是，FastPrintWriter 也是 framework 中的，这里可以替换为 Java 核心库中的 PrintWriter。
 
 ```java
-
 /**
  * @hide
  */
